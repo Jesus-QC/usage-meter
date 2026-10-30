@@ -13,7 +13,7 @@ It updates after every reply and ticks once a minute between replies. Figures ap
 
 ## Usage
 
-Run `/usage-meter` to open the pane. It does not open on its own.
+Run `/usage-meter` to open the pane; it also replies with a small crab and the current mood. The pane does not open on its own.
 
 ## Install
 

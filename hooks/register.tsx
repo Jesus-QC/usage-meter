@@ -188,8 +188,31 @@ export const register: Register = on => {
   on('command.run', { command: 'usage-meter' }, async $ => {
     await refresh($)
     await $.ui.open({ id: PANE, title: TITLE })
+    const list = await read($, limits)
+    if (list.length === 0) return { text: 'Usage pane opened. Figures appear after the first reply.' }
+    const mood = moodOf(list, Date.now())
 
-    return { text: 'Usage pane opened.' }
+    // The row's text is the mood line; the CommandOutput hook below draws the crab beside it.
+    return { text: MOOD_LINE[mood] }
+  })
+
+  on('ui.render', { component: 'CommandOutput', props: { command: 'usage-meter' } }, async ($, e, next) => {
+    // The row's text arrives under the plugin's name ("usage-meter: …"), so match the line's ending.
+    const mood = (Object.keys(MOOD_LINE) as Mood[]).find(m => e.props.text.trim().endsWith(MOOD_LINE[m]))
+    if (!mood) return next(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text } = ui
+
+    return (
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        {'Svg' in ui ? (
+          <ui.Svg source={crabSvg(mood)} alt={`Claude crab, ${mood}`} width={33} height={22} isInteractive />
+        ) : (
+          <Text color="claude">{CRAB[0]}</Text>
+        )}
+        <Text>{MOOD_LINE[mood]}</Text>
+      </Box>
+    )
   })
 
   on('session.measure', async ($, e, next) => {
