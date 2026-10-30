@@ -74,6 +74,97 @@ function textBar(left: number, even: number | undefined, cells: number) {
   return bar
 }
 
+type Mood = 'happy' | 'worried' | 'tired'
+
+// The buddy reacts to the tightest window: nearly empty, behind pace, or fine.
+function moodOf(list: readonly Limit[], at: number): Mood {
+  let worst = 0
+  for (const limit of list) {
+    const left = Math.max(0, 100 - limit.percentUsed) / 100
+    if (left < 0.1) return 'tired'
+    const even = evenLeft(limit, at)
+    if (even !== undefined) worst = Math.min(worst, left - even)
+  }
+  return worst < -0.05 ? 'worried' : 'happy'
+}
+
+const MOOD_LINE: Record<Mood, string> = {
+  happy: 'Plenty of room. Cruising!',
+  worried: 'Burning a bit faster than even pace…',
+  tired: 'Running on fumes. Time for a break?',
+}
+
+// The welcome screen's crab, for surfaces that draw no SVG.
+const CRAB = [' ▐▛███▜▌', '▝▜█████▛▘', '  ▘▘ ▝▝']
+
+// The crab from Claude Code's welcome screen, one rect per pixel of its sprite:
+// body x3..14 over rows 0-3, eyes at (5,1) and (12,1), claws on row 2, legs on row 4.
+function crabSvg(mood: Mood) {
+  const ink = '#1f1410'
+  const body = '#d97757'
+  // Terminal quadrant pixels are twice as tall as they are wide.
+  const U = 5
+  const H = 10
+  const OX = 8
+  const OY = 8
+  const px = (x: number, y: number, fill = body, h = H, dy = 0) =>
+    `<rect x="${OX + x * U}" y="${OY + y * H + dy}" width="${U}" height="${h}" fill="${fill}"/>`
+  const span = (y: number, from: number, to: number, skip: number[] = []) => {
+    let out = ''
+    for (let x = from; x <= to; x++) if (!skip.includes(x)) out += px(x, y)
+    return out
+  }
+  const torso = span(0, 3, 14) + span(1, 3, 14, [5, 12]) + span(2, 3, 14) + span(3, 3, 14)
+
+  const blink = `<animate attributeName="fill" values="${ink};${ink};${body};${ink}" keyTimes="0;0.9;0.95;1" dur="3.6s" repeatCount="indefinite"/>`
+  const eye = (x: number) =>
+    mood === 'tired'
+      ? px(x, 1) + px(x, 1, ink, 2.5, H / 2)
+      : `<rect x="${OX + x * U}" y="${OY + H}" width="${U}" height="${H}" fill="${ink}">${blink}</rect>`
+
+  const step = (dur: string, begin: string) =>
+    `<animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="${dur}" begin="${begin}" calcMode="discrete" repeatCount="indefinite"/>`
+  const legDur = { happy: '0.5s', worried: '0.24s', tired: '0s' }[mood]
+  const legs = (xs: number[], begin: string) =>
+    `<g>${xs.map(x => px(x, 4)).join('')}${legDur === '0s' ? '' : step(legDur, begin)}</g>`
+
+  const wave = (begin: string) =>
+    mood === 'happy'
+      ? `<animateTransform attributeName="transform" type="translate" values="0 0;0 -${H / 2};0 0" dur="0.9s" begin="${begin}" calcMode="discrete" repeatCount="indefinite"/>`
+      : ''
+  const claws = `<g>${px(1, 2)}${px(2, 2)}${wave('0s')}</g><g>${px(15, 2)}${px(16, 2)}${wave('0.45s')}</g>`
+
+  const move = {
+    happy: `<animateTransform attributeName="transform" type="translate" values="0 0;3 -2;6 0;3 -2;0 0;-3 -2;-6 0;-3 -2;0 0" dur="3s" repeatCount="indefinite"/>`,
+    worried: `<animateTransform attributeName="transform" type="translate" values="0 0;1.5 0;-1.5 0;0 0" dur="0.3s" repeatCount="indefinite"/>`,
+    tired: `<animateTransform attributeName="transform" type="translate" values="0 0;0 2;0 0" dur="3.2s" repeatCount="indefinite"/>`,
+  }[mood]
+
+  const extra = {
+    happy:
+      `<g fill="#f3c08a"><rect x="4" y="4" width="3" height="3"><animate attributeName="opacity" values="0;1;0" dur="1.6s" repeatCount="indefinite"/></rect>` +
+      `<rect x="93" y="10" width="3" height="3"><animate attributeName="opacity" values="0;1;0" dur="1.6s" begin="0.8s" repeatCount="indefinite"/></rect></g>`,
+    worried:
+      `<path d="M86 6 q3 5 0 7 q-3 -2 0 -7z" fill="#7fb3ff">` +
+      `<animateTransform attributeName="transform" type="translate" values="0 0;0 12" dur="1.2s" repeatCount="indefinite"/>` +
+      `<animate attributeName="opacity" values="1;0" dur="1.2s" repeatCount="indefinite"/></path>`,
+    tired: ['0s', '1.2s']
+      .map(
+        begin =>
+          `<text x="84" y="14" font-family="-apple-system,system-ui,sans-serif" font-size="9" font-weight="700" fill="#b9a69c" opacity="0">z` +
+          `<animateTransform attributeName="transform" type="translate" values="0 0;6 -10" dur="2.4s" begin="${begin}" repeatCount="indefinite"/>` +
+          `<animate attributeName="opacity" values="0;1;0" dur="2.4s" begin="${begin}" repeatCount="indefinite"/></text>`,
+      )
+      .join(''),
+  }[mood]
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="66" viewBox="0 0 100 66" shape-rendering="crispEdges">` +
+    `<g>${move}${torso}${eye(5)}${eye(12)}${claws}${legs([4, 11], '0s')}${legs([6, 13], legDur === '0s' ? '0s' : `${parseFloat(legDur) / 2}s`)}</g>` +
+    `${extra}</svg>`
+  )
+}
+
 async function refresh($: EngineInterface) {
   const usage = await $.session.usage()
   await update($, limits, () =>
@@ -127,46 +218,69 @@ export const register: Register = on => {
       )
     }
 
+    const mood = moodOf(list, at)
+
+    const cards = list.map(limit => {
+      const label = WINDOWS[limit.kind]?.label ?? limit.kind
+      const leftPct = Math.max(0, Math.round(100 - limit.percentUsed))
+      const left = leftPct / 100
+      const even = evenLeft(limit, at)
+      const reset = untilReset(limit.resetsAt, at)
+      const delta = even === undefined ? undefined : Math.round((left - even) * 100)
+      const pace =
+        delta === undefined ? undefined : delta >= 0 ? `${delta}% ahead of even pace` : `${-delta}% behind even pace`
+
+      return (
+        <Box key={limit.kind} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text bold>{label}</Text>
+            {reset && <Text dimColor>resets in {reset}</Text>}
+          </Box>
+          <Box flexDirection="row" gap={1}>
+            <Text bold color={delta !== undefined && delta < 0 ? 'warning' : undefined}>
+              {leftPct}%
+            </Text>
+            <Text dimColor>left</Text>
+            {pace && <Text dimColor>· {pace}</Text>}
+          </Box>
+          {'Svg' in ui ? (
+            <ui.Svg
+              source={barSvg(left, even, reset)}
+              alt={`${label}: ${leftPct}% left${reset ? `, resets in ${reset}` : ''}`}
+            />
+          ) : (
+            <Text color="claude">{textBar(left, even, (e.props.bodyColumns ?? 40) - 6)}</Text>
+          )}
+        </Box>
+      )
+    })
+
+    // Desktop: usage on top, then the crab centred in the room left, its line beneath.
+    // The column is stretched to the pane's own rows so that room reaches the bottom.
+    if ('Svg' in ui) {
+      const rows = e.props.scroll.bodyRows
+      return (
+        <Box flexDirection="column" gap={1} padding={1} minHeight={rows > 0 ? rows : '100%'}>
+          {cards}
+          <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center" gap={1}>
+            <ui.Svg source={crabSvg(mood)} alt={`Claude crab, ${mood}`} width={150} height={99} isInteractive />
+            <Text dimColor>{MOOD_LINE[mood]}</Text>
+          </Box>
+        </Box>
+      )
+    }
+
     return (
       <Box flexDirection="column" gap={1} padding={1}>
-        {list.map(limit => {
-          const label = WINDOWS[limit.kind]?.label ?? limit.kind
-          const leftPct = Math.max(0, Math.round(100 - limit.percentUsed))
-          const left = leftPct / 100
-          const even = evenLeft(limit, at)
-          const reset = untilReset(limit.resetsAt, at)
-          const delta = even === undefined ? undefined : Math.round((left - even) * 100)
-          const pace =
-            delta === undefined
-              ? undefined
-              : delta >= 0
-                ? `${delta}% ahead of even pace`
-                : `${-delta}% behind even pace`
-
-          return (
-            <Box key={limit.kind} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-              <Box flexDirection="row" justifyContent="space-between">
-                <Text bold>{label}</Text>
-                {reset && <Text dimColor>resets in {reset}</Text>}
-              </Box>
-              <Box flexDirection="row" gap={1}>
-                <Text bold color={delta !== undefined && delta < 0 ? 'warning' : undefined}>
-                  {leftPct}%
-                </Text>
-                <Text dimColor>left</Text>
-                {pace && <Text dimColor>· {pace}</Text>}
-              </Box>
-              {'Svg' in ui ? (
-                <ui.Svg
-                  source={barSvg(left, even, reset)}
-                  alt={`${label}: ${leftPct}% left${reset ? `, resets in ${reset}` : ''}`}
-                />
-              ) : (
-                <Text color="claude">{textBar(left, even, (e.props.bodyColumns ?? 40) - 6)}</Text>
-              )}
-            </Box>
-          )
-        })}
+        <Box flexDirection="row" alignItems="center" gap={1}>
+          <Box flexDirection="column">
+            {CRAB.map(line => (
+              <Text color="claude">{line}</Text>
+            ))}
+          </Box>
+          <Text dimColor>{MOOD_LINE[mood]}</Text>
+        </Box>
+        {cards}
       </Box>
     )
   })

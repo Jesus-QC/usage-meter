@@ -7,6 +7,8 @@ A Claude Code mod that adds a **Usage** pane showing how much of your Claude sub
 - the time until each window resets
 - a white marker at the **even pace** point: where "% left" would be if usage were spread evenly across the window, with a note saying how far ahead or behind it you are
 
+Below the meters, the pixel Claude crab reacts to the tightest window: happy and scuttling when you're on or ahead of pace, sweating when you're more than 5% behind, and dozing off when under 10% is left.
+
 It updates after every reply and ticks once a minute between replies. Figures appear after the first reply on a Claude subscription. In a terminal the bar is drawn in text, with `│` as the pace marker.
 
 ## Usage
