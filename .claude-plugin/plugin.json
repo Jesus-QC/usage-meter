@@ -1,0 +1,6 @@
+{
+  "name": "usage-meter",
+  "version": "0.1.0",
+  "description": "A pane showing session and weekly usage left, time to reset, and an even-pace marker",
+  "types": "./types/index.d.ts"
+}
