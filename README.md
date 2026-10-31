@@ -11,7 +11,7 @@ A Claude Code mod that adds a **Usage** pane showing how much of your Claude sub
 
 Below the meters, the pixel Claude crab reacts to the tightest window: happy and scuttling when you're on or ahead of pace, sweating when you're more than 5% behind, and dozing off when under 10% is left.
 
-It updates after every reply, and fetches fresh figures when you run `/usage-meter` and every 5 minutes in between, at most once per 5 minutes (longer if the usage endpoint asks it to back off): it reads the same figures `/usage` shows, so the pane stays current while you are idle. The reset countdown ticks every minute. Figures need a Claude subscription. In a terminal the bar is drawn in text, with `│` as the pace marker.
+It updates after every reply, and fetches fresh figures when you run `/usage-meter` and every 5 minutes in between, at most once per 5 minutes (longer if the usage endpoint asks it to back off): it reads the same figures `/usage` shows, so the pane stays current while you are idle. The reset countdown ticks every minute. The last figures are saved, so a new session or a reload shows them right away. Figures need a Claude subscription. In a terminal the bar is drawn in text, with `│` as the pace marker.
 
 ## Usage
 

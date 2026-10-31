@@ -181,13 +181,34 @@ async function openPane($: EngineInterface) {
 // The endpoint rate-limits hard, so ask at most this often, and back off longer after a 429.
 const FETCH_EVERY = 5 * 60_000
 const BACKOFF = 15 * 60_000
-let nextFetchAt = 0
+// Kept in $.store, shared by every session and kept across reloads: when the next fetch
+// may go out, and the last figures any session saw, so a fresh session starts with them.
+const NEXT_FETCH_KEY = 'nextFetchAt'
+const LAST_KEY = 'lastLimits'
+
+async function saveLast($: EngineInterface, list: Limit[]) {
+  if (list.length > 0) await $.store.set(LAST_KEY, list).catch(() => undefined)
+}
+
+// The last figures saved; a window that has reset since reads as unused.
+async function loadLast($: EngineInterface, at: number): Promise<Limit[]> {
+  const saved = await $.store.get(LAST_KEY).catch(() => undefined)
+  if (!Array.isArray(saved)) return []
+  return saved
+    .filter((l): l is Limit => typeof l?.kind === 'string' && typeof l?.percentUsed === 'number')
+    .map(l =>
+      l.resetsAt && Date.parse(l.resetsAt) <= at
+        ? { kind: l.kind, percentUsed: 0 }
+        : { kind: l.kind, percentUsed: l.percentUsed, resetsAt: l.resetsAt },
+    )
+}
 
 // Asks the usage endpoint directly; undefined off a subscription, between fetches, or when the request fails.
 async function fetchLimits($: EngineInterface): Promise<Limit[] | undefined> {
   const at = Date.now()
+  const nextFetchAt = Number(await $.store.get(NEXT_FETCH_KEY).catch(() => 0)) || 0
   if (at < nextFetchAt) return undefined
-  nextFetchAt = at + FETCH_EVERY
+  await $.store.set(NEXT_FETCH_KEY, at + FETCH_EVERY).catch(() => undefined)
   const auth = await $.session.authorize().catch(() => null)
   if (auth?.kind !== 'bearer') return undefined
   const res = await $.http
@@ -195,7 +216,8 @@ async function fetchLimits($: EngineInterface): Promise<Limit[] | undefined> {
     .catch(() => undefined)
   if (res?.status === 429) {
     const retryAfter = Number(res.headers['retry-after'] ?? res.headers['Retry-After'])
-    nextFetchAt = at + Math.max(BACKOFF, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0)
+    const wait = Math.max(BACKOFF, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0)
+    await $.store.set(NEXT_FETCH_KEY, at + wait).catch(() => undefined)
   }
   if (!res?.ok) return undefined
   let body: Record<string, { utilization?: unknown; resets_at?: unknown } | null>
@@ -222,13 +244,15 @@ async function refresh($: EngineInterface) {
   const usage = await $.session.usage()
   const fetched = (await fetchLimits($)) ?? []
   const fresh = new Set(fetched.map(l => l.kind))
-  const next = [
+  let next = [
     ...usage.rateLimits
       .filter(l => !fresh.has(l.kind))
       .map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
     ...fetched,
   ]
-  // Nothing to show (a reload before any reply, a failed request): keep what the pane had.
+  if (next.length > 0) await saveLast($, next)
+  // Nothing new (a new session or reload before any reply, a fetch held back): the last saved figures.
+  else next = await loadLast($, Date.now())
   if (next.length > 0) await update($, limits, () => next)
 }
 
@@ -275,10 +299,10 @@ export const register: Register = on => {
   })
 
   on('session.measure', async ($, e, next) => {
-    if (e.changed.includes('rateLimits')) {
-      await update($, limits, () =>
-        e.rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
-      )
+    if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
+      const list = e.rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
+      await update($, limits, () => list)
+      await saveLast($, list)
       await update($, now, () => Date.now())
     }
 

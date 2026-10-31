@@ -75,6 +75,10 @@ test('a failed fetch keeps the session reading', async ($, on) => {
 
 test('a second run within the spacing does not fetch again', async ($, on) => {
   let fetched = 0
+  // The spacing lives in the store, shared by every session.
+  const store = new Map<string, unknown>()
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => (store.set(e.key, e.value), { value: undefined }))
   on('command.register', () => ({ value: { command: 'usage-meter' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.usage', () => ({
@@ -108,4 +112,29 @@ test('nothing new keeps the figures the pane had', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /^90%$/ })).toBeTruthy()
   await ui.unmount()
+})
+
+test('a new session with no reply yet shows the last saved figures', async ($, on) => {
+  const saved = [
+    { kind: 'five_hour', percentUsed: 30, resetsAt: '2099-01-01T00:00:00Z' },
+    // A window that reset since it was saved reads as unused.
+    { kind: 'seven_day', percentUsed: 70, resetsAt: '2000-01-01T00:00:00Z' },
+  ]
+  on('store.get', (_, e) => ({ value: e.key === 'lastLimits' ? saved : undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-meter' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] },
+  }))
+  on('session.authorize', () => ({ value: null }))
+
+  await $.command.run(RUN)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /^70%$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^100%$/ })).toBeTruthy()
+    await ui.unmount()
+  }
 })
