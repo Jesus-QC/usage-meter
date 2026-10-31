@@ -6,6 +6,8 @@ import type { Limit } from '../types'
 const PANE = 'usage-meter'
 const TITLE = 'Usage'
 const HOUR = 3_600_000
+// The endpoint /usage reads: fresh figures without waiting for the next reply.
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 
 const limits = atom({ plugin: 'usage-meter', key: 'limits' } as const, [], {
   shape: 'limits-1',
@@ -176,11 +178,44 @@ async function openPane($: EngineInterface) {
   return { text: MOOD_LINE[mood] }
 }
 
+// Asks the usage endpoint directly; undefined off a subscription or when the request fails.
+async function fetchLimits($: EngineInterface): Promise<Limit[] | undefined> {
+  const auth = await $.session.authorize().catch(() => null)
+  if (auth?.kind !== 'bearer') return undefined
+  const res = await $.http
+    .fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20' } })
+    .catch(() => undefined)
+  if (!res?.ok) return undefined
+  let body: Record<string, { utilization?: unknown; resets_at?: unknown } | null>
+  try {
+    body = JSON.parse(res.text)
+  } catch {
+    return undefined
+  }
+  const list: Limit[] = []
+  for (const kind of ['five_hour', 'seven_day']) {
+    const w = body?.[kind]
+    if (typeof w?.utilization !== 'number') continue
+    list.push({
+      kind,
+      percentUsed: Math.round(w.utilization * 10) / 10,
+      resetsAt: typeof w.resets_at === 'string' ? w.resets_at : undefined,
+    })
+  }
+  return list.length > 0 ? list : undefined
+}
+
+// The session's last readings, with any window the endpoint answered taking their place.
 async function refresh($: EngineInterface) {
   const usage = await $.session.usage()
-  await update($, limits, () =>
-    usage.rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
-  )
+  const fetched = (await fetchLimits($)) ?? []
+  const fresh = new Set(fetched.map(l => l.kind))
+  await update($, limits, () => [
+    ...usage.rateLimits
+      .filter(l => !fresh.has(l.kind))
+      .map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
+    ...fetched,
+  ])
 }
 
 export const register: Register = on => {
@@ -195,7 +230,11 @@ export const register: Register = on => {
       .catch(() => undefined)
     await update($, now, () => Date.now())
     await refresh($)
-    $.clock.every(60_000, () => update($, now, () => Date.now()))
+    // Every minute: move the countdown and fetch fresh figures, so the pane keeps up between turns.
+    $.clock.every(60_000, () => {
+      void update($, now, () => Date.now())
+      void refresh($).catch(() => undefined)
+    })
 
     return next(e)
   })
