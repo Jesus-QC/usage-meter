@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Limit } from '../types'
+import type { Checked, Limit } from '../types'
 
 const PANE = 'usage-meter'
 const TITLE = 'Usage'
@@ -15,6 +15,9 @@ const limits = atom({ plugin: 'usage-meter', key: 'limits' } as const, [], {
 // Ticks every minute so the countdown and the pace marker move between turns.
 const now = atom({ plugin: 'usage-meter', key: 'now' } as const, 0, {
   shape: 'now-1',
+})
+const checked = atom({ plugin: 'usage-meter', key: 'checked' } as const, { at: 0 } as Checked, {
+  shape: 'checked-1',
 })
 
 const WINDOWS: Record<string, { label: string; ms?: number }> = {
@@ -168,46 +171,74 @@ function crabSvg(mood: Mood) {
 }
 
 async function openPane($: EngineInterface) {
-  await refresh($)
+  // Run by hand: skip the 5-minute spacing, as t3code does, but not a 429 back-off.
+  await refresh($, { manual: true })
   await $.ui.open({ id: PANE, title: TITLE })
   const list = await read($, limits)
   if (list.length === 0) return { text: 'Usage pane opened. Figures appear after the first reply.' }
-  const mood = moodOf(list, Date.now())
+  const at = Date.now()
+  const mood = moodOf(list, at)
 
-  // The row's text is the mood line; the CommandOutput hook below draws the crab beside it.
-  return { text: MOOD_LINE[mood] }
+  // The row's text is the mood line, then when it was checked; the CommandOutput hook below draws the crab beside it.
+  return { text: `${MOOD_LINE[mood]}${checkedLine(await read($, checked), at, ' · ')}` }
 }
 
-// The endpoint rate-limits hard, so ask at most this often, and back off longer after a 429.
+function ago(ms: number) {
+  const m = Math.floor(ms / 60_000)
+  if (m < 1) return 'just now'
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  return h < 24 ? `${h}h ${m % 60}m ago` : `${Math.floor(h / 24)}d ago`
+}
+
+// "updated 3m ago", and when a held-back fetch retries; empty when nothing is known.
+function checkedLine(c: Checked, at: number, lead = '') {
+  const parts: string[] = []
+  if (c.at > 0) parts.push(`updated ${ago(Math.max(0, at - c.at))}`)
+  if (c.retryAt && c.retryAt > at) parts.push(`rate limited, retrying in ${Math.ceil((c.retryAt - at) / 60_000)}m`)
+  return parts.length > 0 ? lead + parts.join(' · ') : ''
+}
+
+// The endpoint rate-limits hard: automatic fetches go at most this often, and none during a 429 back-off.
 const FETCH_EVERY = 5 * 60_000
 const BACKOFF = 15 * 60_000
-// Kept in $.store, shared by every session and kept across reloads: when the next fetch
-// may go out, and the last figures any session saw, so a fresh session starts with them.
+// Kept in $.store, shared by every session and kept across reloads: when the next automatic fetch
+// may go out, how long a 429 holds every fetch back, and the last figures any session saw with
+// when they were checked, so a fresh session starts with them.
 const NEXT_FETCH_KEY = 'nextFetchAt'
+const BLOCKED_KEY = 'blockedUntil'
 const LAST_KEY = 'lastLimits'
 
-async function saveLast($: EngineInterface, list: Limit[]) {
-  if (list.length > 0) await $.store.set(LAST_KEY, list).catch(() => undefined)
+async function storeNumber($: EngineInterface, key: string) {
+  return Number(await $.store.get(key).catch(() => 0)) || 0
 }
 
-// The last figures saved; a window that has reset since reads as unused.
-async function loadLast($: EngineInterface, at: number): Promise<Limit[]> {
+async function saveLast($: EngineInterface, list: Limit[], at: number) {
+  if (list.length > 0) await $.store.set(LAST_KEY, { at, limits: list }).catch(() => undefined)
+}
+
+// The last figures saved and when; a window that has reset since reads as unused.
+async function loadLast($: EngineInterface, at: number): Promise<{ at: number; limits: Limit[] }> {
   const saved = await $.store.get(LAST_KEY).catch(() => undefined)
-  if (!Array.isArray(saved)) return []
-  return saved
+  // 0.3.2 saved the bare list, with no time.
+  const raw = Array.isArray(saved) ? saved : (saved as { limits?: unknown } | undefined)?.limits
+  const savedAt = Array.isArray(saved) ? 0 : Number((saved as { at?: unknown } | undefined)?.at) || 0
+  if (!Array.isArray(raw)) return { at: 0, limits: [] }
+  const list = raw
     .filter((l): l is Limit => typeof l?.kind === 'string' && typeof l?.percentUsed === 'number')
     .map(l =>
       l.resetsAt && Date.parse(l.resetsAt) <= at
         ? { kind: l.kind, percentUsed: 0 }
         : { kind: l.kind, percentUsed: l.percentUsed, resetsAt: l.resetsAt },
     )
+  return { at: savedAt, limits: list }
 }
 
-// Asks the usage endpoint directly; undefined off a subscription, between fetches, or when the request fails.
-async function fetchLimits($: EngineInterface): Promise<Limit[] | undefined> {
+// Asks the usage endpoint directly; undefined off a subscription, while held back, or when the request fails.
+async function fetchLimits($: EngineInterface, manual: boolean): Promise<Limit[] | undefined> {
   const at = Date.now()
-  const nextFetchAt = Number(await $.store.get(NEXT_FETCH_KEY).catch(() => 0)) || 0
-  if (at < nextFetchAt) return undefined
+  if (at < (await storeNumber($, BLOCKED_KEY))) return undefined
+  if (!manual && at < (await storeNumber($, NEXT_FETCH_KEY))) return undefined
   await $.store.set(NEXT_FETCH_KEY, at + FETCH_EVERY).catch(() => undefined)
   const auth = await $.session.authorize().catch(() => null)
   if (auth?.kind !== 'bearer') return undefined
@@ -217,7 +248,7 @@ async function fetchLimits($: EngineInterface): Promise<Limit[] | undefined> {
   if (res?.status === 429) {
     const retryAfter = Number(res.headers['retry-after'] ?? res.headers['Retry-After'])
     const wait = Math.max(BACKOFF, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0)
-    await $.store.set(NEXT_FETCH_KEY, at + wait).catch(() => undefined)
+    await $.store.set(BLOCKED_KEY, at + wait).catch(() => undefined)
   }
   if (!res?.ok) return undefined
   let body: Record<string, { utilization?: unknown; resets_at?: unknown } | null>
@@ -239,21 +270,41 @@ async function fetchLimits($: EngineInterface): Promise<Limit[] | undefined> {
   return list.length > 0 ? list : undefined
 }
 
-// The session's last readings, with any window the endpoint answered taking their place.
-async function refresh($: EngineInterface) {
-  const usage = await $.session.usage()
-  const fetched = (await fetchLimits($)) ?? []
-  const fresh = new Set(fetched.map(l => l.kind))
-  let next = [
-    ...usage.rateLimits
-      .filter(l => !fresh.has(l.kind))
-      .map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
-    ...fetched,
-  ]
-  if (next.length > 0) await saveLast($, next)
-  // Nothing new (a new session or reload before any reply, a fetch held back): the last saved figures.
-  else next = await loadLast($, Date.now())
-  if (next.length > 0) await update($, limits, () => next)
+// Fresh figures from the endpoint when it answers; else what the pane has, or the last saved ones.
+async function refresh($: EngineInterface, { manual = false } = {}) {
+  const at = Date.now()
+  const fetched = await fetchLimits($, manual)
+  const retryAt = await storeNumber($, BLOCKED_KEY)
+  if (fetched) {
+    // Windows the endpoint left out keep the session's reading.
+    const fresh = new Set(fetched.map(l => l.kind))
+    const usage = await $.session.usage()
+    const list = [
+      ...usage.rateLimits
+        .filter(l => !fresh.has(l.kind))
+        .map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
+      ...fetched,
+    ]
+    await update($, limits, () => list)
+    await update($, checked, () => ({ at }))
+    await saveLast($, list, at)
+    return
+  }
+  const current = await read($, checked)
+  // A newer reading from another session (or before a reload) wins over what this one shows.
+  const last = await loadLast($, at)
+  if (last.limits.length > 0 && (last.at > current.at || (await read($, limits)).length === 0)) {
+    await update($, limits, () => last.limits)
+    await update($, checked, () => ({ at: last.at, retryAt: retryAt > at ? retryAt : undefined }))
+    return
+  }
+  // Nothing shown or saved yet: the session's own reading, its time unknown.
+  if ((await read($, limits)).length === 0) {
+    const usage = await $.session.usage()
+    const list = usage.rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
+    if (list.length > 0) await update($, limits, () => list)
+  }
+  await update($, checked, c => ({ at: c.at, retryAt: retryAt > at ? retryAt : undefined }))
 }
 
 export const register: Register = on => {
@@ -268,7 +319,7 @@ export const register: Register = on => {
       .catch(() => undefined)
     await update($, now, () => Date.now())
     await refresh($)
-    // Every minute: move the countdown, and fetch fresh figures when fetchLimits' spacing allows.
+    // Every minute: move the countdown and the "updated" line, and fetch when the spacing allows.
     $.clock.every(60_000, () => {
       void update($, now, () => Date.now())
       void refresh($).catch(() => undefined)
@@ -280,9 +331,11 @@ export const register: Register = on => {
   on('command.run', { command: 'usage-meter' }, $ => openPane($))
 
   on('ui.render', { component: 'CommandOutput', props: { command: 'usage-meter' } }, async ($, e, next) => {
-    // The row's text arrives under the plugin's name ("usage-meter: …"), so match the line's ending.
-    const mood = (Object.keys(MOOD_LINE) as Mood[]).find(m => e.props.text.trim().endsWith(MOOD_LINE[m]))
+    // The row's text arrives under the plugin's name ("usage-meter: …"), then the mood line and when it was checked.
+    const text = e.props.text.trim()
+    const mood = (Object.keys(MOOD_LINE) as Mood[]).find(m => text.includes(MOOD_LINE[m]))
     if (!mood) return next(e)
+    const when = text.slice(text.indexOf(MOOD_LINE[mood]) + MOOD_LINE[mood].length).replace(/^ · /, '')
     const ui = $.ui.resolve(e)
     const { Box, Text } = ui
 
@@ -294,16 +347,19 @@ export const register: Register = on => {
           <Text color="claude">{CRAB[0]}</Text>
         )}
         <Text>{MOOD_LINE[mood]}</Text>
+        {when && <Text dimColor>· {when}</Text>}
       </Box>
     )
   })
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
+      const at = Date.now()
       const list = e.rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
       await update($, limits, () => list)
-      await saveLast($, list)
-      await update($, now, () => Date.now())
+      await update($, checked, c => ({ at, retryAt: c.retryAt }))
+      await saveLast($, list, at)
+      await update($, now, () => at)
     }
 
     return next(e)
@@ -325,6 +381,7 @@ export const register: Register = on => {
     }
 
     const mood = moodOf(list, at)
+    const when = checkedLine(await read($, checked), at)
 
     const cards = list.map(limit => {
       const label = WINDOWS[limit.kind]?.label ?? limit.kind
@@ -371,6 +428,7 @@ export const register: Register = on => {
           <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center" gap={1}>
             <ui.Svg source={crabSvg(mood)} alt={`Claude crab, ${mood}`} width={150} height={99} isInteractive />
             <Text dimColor>{MOOD_LINE[mood]}</Text>
+            {when && <Text dimColor>{when}</Text>}
           </Box>
         </Box>
       )
@@ -384,7 +442,10 @@ export const register: Register = on => {
               <Text color="claude">{line}</Text>
             ))}
           </Box>
-          <Text dimColor>{MOOD_LINE[mood]}</Text>
+          <Box flexDirection="column">
+            <Text dimColor>{MOOD_LINE[mood]}</Text>
+            {when && <Text dimColor>{when}</Text>}
+          </Box>
         </Box>
         {cards}
       </Box>
