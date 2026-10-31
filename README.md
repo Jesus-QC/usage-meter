@@ -1,5 +1,7 @@
 # usage-meter
 
+<img width="1440" height="912" alt="Screenshot 2026-10-31 at 17 38 06" src="https://github.com/user-attachments/assets/82f76ec3-2e58-488b-84db-3d4c5ef2b92d" />
+
 A Claude Code mod that adds a **Usage** pane showing how much of your Claude subscription's limits you have left:
 
 - **Session** (5-hour window) and **Weekly** (7-day window), each as a big "% left" figure
