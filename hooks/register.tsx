@@ -21,8 +21,6 @@ const WINDOWS: Record<string, { label: string; ms?: number }> = {
   spend_limit: { label: 'Spend' },
 }
 
-const COMMANDS = ['usage-meter', 'usage-meter:usage-meter'] as const
-
 const ORDER = ['five_hour', 'seven_day', 'spend_limit']
 
 function untilReset(resetsAt: string | undefined, at: number) {
@@ -187,10 +185,14 @@ async function refresh($: EngineInterface) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'usage-meter',
-      description: 'Show usage left and time to reset in a pane',
-    })
+    // Where ~/.claude/commands/usage-meter.md exists (so the menu lists it before a chat
+    // starts) the engine refuses this name; the command.run hook below answers that one.
+    await $.command
+      .register({
+        name: 'usage-meter',
+        description: 'Show usage left and time to reset in a pane',
+      })
+      .catch(() => undefined)
     await update($, now, () => Date.now())
     await refresh($)
     $.clock.every(60_000, () => update($, now, () => Date.now()))
@@ -198,29 +200,26 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // `/usage-meter` is registered at session start; `/usage-meter:usage-meter` is the plugin's
-  // command file, listed in the menu before a session runs. Both open the pane here.
-  for (const command of COMMANDS) on('command.run', { command }, $ => openPane($))
+  on('command.run', { command: 'usage-meter' }, $ => openPane($))
 
-  for (const command of COMMANDS)
-    on('ui.render', { component: 'CommandOutput', props: { command } }, async ($, e, next) => {
-      // The row's text arrives under the plugin's name ("usage-meter: …"), so match the line's ending.
-      const mood = (Object.keys(MOOD_LINE) as Mood[]).find(m => e.props.text.trim().endsWith(MOOD_LINE[m]))
-      if (!mood) return next(e)
-      const ui = $.ui.resolve(e)
-      const { Box, Text } = ui
+  on('ui.render', { component: 'CommandOutput', props: { command: 'usage-meter' } }, async ($, e, next) => {
+    // The row's text arrives under the plugin's name ("usage-meter: …"), so match the line's ending.
+    const mood = (Object.keys(MOOD_LINE) as Mood[]).find(m => e.props.text.trim().endsWith(MOOD_LINE[m]))
+    if (!mood) return next(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text } = ui
 
-      return (
-        <Box flexDirection="row" alignItems="center" gap={1}>
-          {'Svg' in ui ? (
-            <ui.Svg source={crabSvg(mood)} alt={`Claude crab, ${mood}`} width={33} height={22} isInteractive />
-          ) : (
-            <Text color="claude">{CRAB[0]}</Text>
-          )}
-          <Text>{MOOD_LINE[mood]}</Text>
-        </Box>
-      )
-    })
+    return (
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        {'Svg' in ui ? (
+          <ui.Svg source={crabSvg(mood)} alt={`Claude crab, ${mood}`} width={33} height={22} isInteractive />
+        ) : (
+          <Text color="claude">{CRAB[0]}</Text>
+        )}
+        <Text>{MOOD_LINE[mood]}</Text>
+      </Box>
+    )
+  })
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('rateLimits')) {

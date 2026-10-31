@@ -15,6 +15,15 @@ It updates after every reply and ticks once a minute between replies. Figures ap
 
 Run `/usage-meter` to open the pane; it also replies with a small crab and the current mood. The pane does not open on its own.
 
+The mod registers `/usage-meter` once a chat has started. To also see it in the desktop app's command menu before a chat starts, add a personal command file at `~/.claude/commands/usage-meter.md`; the mod answers it, so its text never reaches Claude:
+
+```markdown
+---
+description: Show usage left and time to reset in a pane
+---
+Open the usage-meter pane.
+```
+
 ## Install
 
 At the prompt of a terminal Claude Code session:
