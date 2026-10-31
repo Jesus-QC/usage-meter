@@ -72,3 +72,40 @@ test('a failed fetch keeps the session reading', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /^90%$/ })).toBeTruthy()
   await ui.unmount()
 })
+
+test('a second run within the spacing does not fetch again', async ($, on) => {
+  let fetched = 0
+  on('command.register', () => ({ value: { command: 'usage-meter' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: { window: 200_000 }, rateLimits: STALE },
+  }))
+  on('session.authorize', () => ({ value: { handle: 'h', kind: 'bearer' } }))
+  on('http.fetch', () => {
+    fetched++
+    return { value: { status: 429, ok: false, headers: { 'retry-after': '60' }, text: '' } }
+  })
+
+  await $.command.run(RUN)
+  await $.command.run(RUN)
+  expect(fetched).toBeLessThanOrEqual(1)
+})
+
+test('nothing new keeps the figures the pane had', async ($, on) => {
+  let readings: typeof STALE = STALE
+  on('command.register', () => ({ value: { command: 'usage-meter' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: { window: 200_000 }, rateLimits: readings },
+  }))
+  on('session.authorize', () => ({ value: null }))
+
+  await $.command.run(RUN)
+  // A reload before any reply: the session has no readings yet.
+  readings = []
+  await $.command.run(RUN)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^90%$/ })).toBeTruthy()
+  await ui.unmount()
+})

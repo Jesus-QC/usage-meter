@@ -178,13 +178,25 @@ async function openPane($: EngineInterface) {
   return { text: MOOD_LINE[mood] }
 }
 
-// Asks the usage endpoint directly; undefined off a subscription or when the request fails.
+// The endpoint rate-limits hard, so ask at most this often, and back off longer after a 429.
+const FETCH_EVERY = 5 * 60_000
+const BACKOFF = 15 * 60_000
+let nextFetchAt = 0
+
+// Asks the usage endpoint directly; undefined off a subscription, between fetches, or when the request fails.
 async function fetchLimits($: EngineInterface): Promise<Limit[] | undefined> {
+  const at = Date.now()
+  if (at < nextFetchAt) return undefined
+  nextFetchAt = at + FETCH_EVERY
   const auth = await $.session.authorize().catch(() => null)
   if (auth?.kind !== 'bearer') return undefined
   const res = await $.http
     .fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20' } })
     .catch(() => undefined)
+  if (res?.status === 429) {
+    const retryAfter = Number(res.headers['retry-after'] ?? res.headers['Retry-After'])
+    nextFetchAt = at + Math.max(BACKOFF, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0)
+  }
   if (!res?.ok) return undefined
   let body: Record<string, { utilization?: unknown; resets_at?: unknown } | null>
   try {
@@ -210,12 +222,14 @@ async function refresh($: EngineInterface) {
   const usage = await $.session.usage()
   const fetched = (await fetchLimits($)) ?? []
   const fresh = new Set(fetched.map(l => l.kind))
-  await update($, limits, () => [
+  const next = [
     ...usage.rateLimits
       .filter(l => !fresh.has(l.kind))
       .map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
     ...fetched,
-  ])
+  ]
+  // Nothing to show (a reload before any reply, a failed request): keep what the pane had.
+  if (next.length > 0) await update($, limits, () => next)
 }
 
 export const register: Register = on => {
@@ -230,7 +244,7 @@ export const register: Register = on => {
       .catch(() => undefined)
     await update($, now, () => Date.now())
     await refresh($)
-    // Every minute: move the countdown and fetch fresh figures, so the pane keeps up between turns.
+    // Every minute: move the countdown, and fetch fresh figures when fetchLimits' spacing allows.
     $.clock.every(60_000, () => {
       void update($, now, () => Date.now())
       void refresh($).catch(() => undefined)
