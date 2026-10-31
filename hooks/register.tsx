@@ -21,6 +21,8 @@ const WINDOWS: Record<string, { label: string; ms?: number }> = {
   spend_limit: { label: 'Spend' },
 }
 
+const COMMANDS = ['usage-meter', 'usage-meter:usage-meter'] as const
+
 const ORDER = ['five_hour', 'seven_day', 'spend_limit']
 
 function untilReset(resetsAt: string | undefined, at: number) {
@@ -165,6 +167,17 @@ function crabSvg(mood: Mood) {
   )
 }
 
+async function openPane($: EngineInterface) {
+  await refresh($)
+  await $.ui.open({ id: PANE, title: TITLE })
+  const list = await read($, limits)
+  if (list.length === 0) return { text: 'Usage pane opened. Figures appear after the first reply.' }
+  const mood = moodOf(list, Date.now())
+
+  // The row's text is the mood line; the CommandOutput hook below draws the crab beside it.
+  return { text: MOOD_LINE[mood] }
+}
+
 async function refresh($: EngineInterface) {
   const usage = await $.session.usage()
   await update($, limits, () =>
@@ -185,35 +198,29 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'usage-meter' }, async $ => {
-    await refresh($)
-    await $.ui.open({ id: PANE, title: TITLE })
-    const list = await read($, limits)
-    if (list.length === 0) return { text: 'Usage pane opened. Figures appear after the first reply.' }
-    const mood = moodOf(list, Date.now())
+  // `/usage-meter` is registered at session start; `/usage-meter:usage-meter` is the plugin's
+  // command file, listed in the menu before a session runs. Both open the pane here.
+  for (const command of COMMANDS) on('command.run', { command }, $ => openPane($))
 
-    // The row's text is the mood line; the CommandOutput hook below draws the crab beside it.
-    return { text: MOOD_LINE[mood] }
-  })
+  for (const command of COMMANDS)
+    on('ui.render', { component: 'CommandOutput', props: { command } }, async ($, e, next) => {
+      // The row's text arrives under the plugin's name ("usage-meter: …"), so match the line's ending.
+      const mood = (Object.keys(MOOD_LINE) as Mood[]).find(m => e.props.text.trim().endsWith(MOOD_LINE[m]))
+      if (!mood) return next(e)
+      const ui = $.ui.resolve(e)
+      const { Box, Text } = ui
 
-  on('ui.render', { component: 'CommandOutput', props: { command: 'usage-meter' } }, async ($, e, next) => {
-    // The row's text arrives under the plugin's name ("usage-meter: …"), so match the line's ending.
-    const mood = (Object.keys(MOOD_LINE) as Mood[]).find(m => e.props.text.trim().endsWith(MOOD_LINE[m]))
-    if (!mood) return next(e)
-    const ui = $.ui.resolve(e)
-    const { Box, Text } = ui
-
-    return (
-      <Box flexDirection="row" alignItems="center" gap={1}>
-        {'Svg' in ui ? (
-          <ui.Svg source={crabSvg(mood)} alt={`Claude crab, ${mood}`} width={33} height={22} isInteractive />
-        ) : (
-          <Text color="claude">{CRAB[0]}</Text>
-        )}
-        <Text>{MOOD_LINE[mood]}</Text>
-      </Box>
-    )
-  })
+      return (
+        <Box flexDirection="row" alignItems="center" gap={1}>
+          {'Svg' in ui ? (
+            <ui.Svg source={crabSvg(mood)} alt={`Claude crab, ${mood}`} width={33} height={22} isInteractive />
+          ) : (
+            <Text color="claude">{CRAB[0]}</Text>
+          )}
+          <Text>{MOOD_LINE[mood]}</Text>
+        </Box>
+      )
+    })
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('rateLimits')) {
