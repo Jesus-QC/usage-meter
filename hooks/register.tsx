@@ -404,14 +404,13 @@ export const register: Register = on => {
         <Box key={limit.kind} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
           <Box flexDirection="row" justifyContent="space-between">
             <Text bold>{label}</Text>
-            {reset && <Text dimColor>resets in {reset}</Text>}
+            {pace && <Text dimColor>{pace}</Text>}
           </Box>
           <Box flexDirection="row" gap={1}>
             <Text bold color={delta !== undefined && delta < 0 ? 'warning' : undefined}>
               {leftPct}%
             </Text>
             <Text dimColor>left</Text>
-            {pace && <Text dimColor>· {pace}</Text>}
           </Box>
           {'Svg' in ui ? (
             <ui.Svg
