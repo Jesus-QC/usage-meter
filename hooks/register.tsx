@@ -45,23 +45,30 @@ function evenLeft(limit: Limit, at: number) {
   return Math.min(1, Math.max(0, remaining / span))
 }
 
-function barSvg(left: number, even: number | undefined, reset: string | undefined) {
-  const W = 600
-  const H = 32
+// The pane reports its width in code-font cells; this many CSS pixels to a cell is near enough.
+const PX_PER_CELL = 7.5
+// The bar keeps 0.4.0's proportions (32 tall per 600 wide) but never draws shorter than this.
+const BAR_MIN_PX = 30
+
+// Drawn at about the slot's own pixel width, so the surface barely scales it: the height is what shows.
+function barSvg(left: number, even: number | undefined, reset: string | undefined, slotPx: number) {
+  const W = Math.max(120, Math.round(slotPx))
+  const H = Math.max(BAR_MIN_PX, Math.round((W * 32) / 600))
+  const k = H / 32
   const fill = Math.round(W * left)
   const marker =
     even === undefined
       ? ''
-      : `<rect x="${Math.round(W * even) - 2}" y="0" width="4" height="${H}" fill="#ffffff" stroke="#000" stroke-width="1"/>`
+      : `<rect x="${Math.round(W * even - 2 * k)}" y="0" width="${4 * k}" height="${H}" fill="#ffffff" stroke="#000" stroke-width="1"/>`
   const pill = reset
-    ? `<g><rect x="${W - 86}" y="5" width="80" height="22" rx="4" fill="#1a1a1a" fill-opacity="0.9"/>` +
-      `<text x="${W - 46}" y="20.5" font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="#eee" text-anchor="middle">↻ ${reset}</text></g>`
+    ? `<g><rect x="${W - 86 * k}" y="${5 * k}" width="${80 * k}" height="${22 * k}" rx="${4 * k}" fill="#1a1a1a" fill-opacity="0.9"/>` +
+      `<text x="${W - 46 * k}" y="${20.5 * k}" font-family="-apple-system,system-ui,sans-serif" font-size="${12 * k}" fill="#eee" text-anchor="middle">↻ ${reset}</text></g>`
     : ''
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
-    `<defs><pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
-    `<line x1="0" y1="0" x2="0" y2="8" stroke="#c96442" stroke-opacity="0.35" stroke-width="2"/></pattern>` +
-    `<clipPath id="r"><rect width="${W}" height="${H}" rx="6"/></clipPath></defs>` +
+    `<defs><pattern id="hatch" width="${8 * k}" height="${8 * k}" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+    `<line x1="0" y1="0" x2="0" y2="${8 * k}" stroke="#c96442" stroke-opacity="0.35" stroke-width="${2 * k}"/></pattern>` +
+    `<clipPath id="r"><rect width="${W}" height="${H}" rx="${6 * k}"/></clipPath></defs>` +
     `<g clip-path="url(#r)">` +
     `<rect width="${W}" height="${H}" fill="#c96442" fill-opacity="0.08"/>` +
     `<rect width="${W}" height="${H}" fill="url(#hatch)"/>` +
@@ -408,7 +415,7 @@ export const register: Register = on => {
           </Box>
           {'Svg' in ui ? (
             <ui.Svg
-              source={barSvg(left, even, reset)}
+              source={barSvg(left, even, reset, ((e.props.bodyColumns ?? 60) - 6) * PX_PER_CELL)}
               alt={`${label}: ${leftPct}% left${reset ? `, resets in ${reset}` : ''}`}
             />
           ) : (
